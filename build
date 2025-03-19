@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+
+set -exufo pipefail
+
+src_dir="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+
+container=
+arch=amd64
+skip_source=
+skip_binary=
+build=binary
+build_dep_dir=
+leave_artifacts=
+edit=
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--container)
+			container="$2"
+			shift 2
+			;;
+		--arch)
+			arch="$2"
+			shift 2
+			;;
+		--source-only)
+			skip_binary=true
+			shift
+			;;
+		--binary-only)
+			skip_source=true
+			shift
+			;;
+		--build)
+			build="$2"
+			shift 2
+			;;
+		--build-dependencies)
+			build_dep_dir="$(realpath "$2")"
+			shift 2
+			;;
+		--leave-artifacts)
+			leave_artifacts=true
+			shift
+			;;
+		--edit)
+			edit=true
+			shift
+			;;
+		*)
+			break
+			;;
+	esac
+done
+
+dir="$(realpath "$1")"
+
+if [ -z "$container" ]; then
+	if [ -e "$dir/.container" ]; then
+		container="$(cat "$dir/.container")"
+	else
+		container=ghcr.io/gardenlinux/repo-debian-snapshot
+	fi
+fi
+
+mount_opts=(
+	-v "$src_dir/bin:/opt/package_build/bin"
+	-v "$dir:/opt/package_build/workdir"
+)
+
+if [ -n "$build_dep_dir" ]; then
+	mount_opts+=(-v "$build_dep_dir:/opt/package_build/workdir/build_dep")
+fi
+
+if [ -n "$edit" ]; then
+  podman run --security-opt seccomp=unconfined --arch "$arch" -ti --rm "${mount_opts[@]}" -w "/opt/package_build/workdir/output" -e leave_artifacts="$leave_artifacts" "$container" /opt/package_build/bin/patchenv-init
+  exit $?
+fi
+
+if [ -z "$skip_source" ]; then
+  if [ "$leave_artifacts" = "true" ]; then
+    mkdir -p $dir/output
+  fi
+    podman run --security-opt seccomp=unconfined --arch "$arch" --rm "${mount_opts[@]}" -w "/opt/package_build/workdir" -e leave_artifacts="$leave_artifacts" "$container" /opt/package_build/bin/source
+fi
+if [ -z "$skip_binary" ]; then
+	podman run --security-opt seccomp=unconfined --arch "$arch" --rm "${mount_opts[@]}" -w "/opt/package_build/workdir" "$container" /opt/package_build/bin/binary "$build"
+fi

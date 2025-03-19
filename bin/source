@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+
+set -exuo pipefail
+shopt -s nullglob
+
+auto_decompress() (
+	case "${1##*.}" in
+		gz)
+			gzip -d < "$1"
+			;;
+		xz)
+			xz -d < "$1"
+			;;
+		bz2)
+			bzip2 -d < "$1"
+			;;
+		*)
+			exit 1
+			;;
+	esac
+)
+
+
+# Usage:
+# apt_src [--ignore-orig] <package_name>[=<version>]
+#
+# Downloads and extracts the source files of a Debian package.
+# - With <package_name>=<version>, fetches the specific version.
+# - With --ignore-orig, skips processing the original source archive (*.orig.tar.*).
+# If no version is provided, it downloads the candidate version.
+apt_src() (
+	ignore_orig=false
+	if [ "$1" = "--ignore-orig" ]; then
+		ignore_orig=true
+		shift
+	fi
+
+	tmp_dir="$(mktemp -d)"
+	trap 'cd / && rm -rf "$tmp_dir"' EXIT
+	cd "$tmp_dir"
+
+	# if the src repo provides multiple sources for the same package
+	# download the src with the same version as the candidate
+	if [[ "$1" = *=* ]]; then
+		# specific version requested, do nothing
+		pkg="$1"
+	else
+		# source package name might not have any installable candidates, so check the candidate version via one of the provided packages
+		candidate=""
+		for p in $(apt-cache showsrc "$1" | grep Binary | sed 's/Binary: //' | tr -d "," | tr '[:blank:]' '\n' | sort | uniq | grep -v -- -udeb); do
+			if candidate=$(apt-cache policy "$p"); then
+				candidate=$(apt-cache policy "$p" | grep Candidate | cut -d: -f 2- | tr -d "[:blank:]" | sed 's/+b[0-9]\+$//')
+				break
+			fi
+		done
+		if [[ "$candidate" = "" ]]; then
+			echo "cannot determine candidate version"
+			exit 1
+		fi
+		pkg="${1}=${candidate}"
+	fi
+
+	apt-get source --only-source --download-only "$pkg"
+
+	orig=(*.orig.tar.*)
+	if [ -n "${orig[*]}" ]; then
+		[ "$ignore_orig" = true ] || auto_decompress "$orig" | tee "$dir/orig.tar" | tar --extract --strip-components 1 --directory "$dir/src"
+		rm "${orig[@]}"
+	fi
+
+	diff=(*.debian.tar.*)
+	if [ -n "${diff[*]}" ]; then
+		auto_decompress "$diff" | tar --extract --directory "$dir/src"
+		rm "${diff[@]}"
+	else
+		native=(*.tar.*)
+		auto_decompress "$native" | tar --extract --strip-components 1 --directory "$dir/src"
+		rm "${native[@]}"
+	fi
+)
+
+git_src() (
+	tmp_dir="$(mktemp -d)"
+	trap 'cd / && rm -rf "$tmp_dir"' EXIT
+	git clone --depth 1 --recurse-submodules "$@" "$tmp_dir/src"
+	mkdir "$tmp_dir/_"
+	git -C "$tmp_dir/src" ls-files --recurse-submodules -z | tar --directory "$tmp_dir/src" --create --null --files-from - | tar --extract --directory "$tmp_dir/_"
+	tar --create --directory "$tmp_dir" _ | tee "$dir/orig.tar" | tar --extract --strip-components 1 --directory "$dir/src"
+)
+
+git_src_commit() (
+	tmp_dir="$(mktemp -d)"
+	trap 'cd / && rm -rf "$tmp_dir"' EXIT
+	commit="$1"
+	repo="$2"
+
+	mkdir "$tmp_dir/src"
+	git -C "$tmp_dir/src" init
+	git -C "$tmp_dir/src" remote add origin "$repo"
+	git -C "$tmp_dir/src" fetch --depth 1 origin "$commit"
+	git -C "$tmp_dir/src" checkout FETCH_HEAD
+	git -C "$tmp_dir/src" submodule update --init --recursive --depth 1
+
+	mkdir "$tmp_dir/_"
+	git -C "$tmp_dir/src" ls-files --recurse-submodules -z | tar --directory "$tmp_dir/src" --create --null --files-from - | tar --extract --directory "$tmp_dir/_"
+	tar --create --directory "$tmp_dir" _ | tee "$dir/orig.tar" | tar --extract --strip-components 1 --directory "$dir/src"
+)
+
+import_src() (
+	cp -r "$1/." "$dir/src/."
+)
+
+apply_patches() (
+	patch_dir="${1-patches}"
+	if [ -f "$patch_dir/series" ]; then
+		while read -r patch; do
+			(cd "$dir/src" && patch -p1;) < "$patch_dir/$patch"
+		done < "$patch_dir/series"
+	fi
+)
+
+import_upstream_patches() (
+	patch_dir="${1-upstream_patches}"
+	if [ -f "$patch_dir/series" ]; then
+		while read -r patch; do
+			if [ -e "$dir/src/debian/patches/$patch" ]; then
+				echo "patch $patch already exists in debian/patches" >&2
+				exit 1
+			fi
+
+			mkdir -p "$(dirname "$dir/src/debian/patches/$patch")"
+			cp "$patch_dir/$patch" "$dir/src/debian/patches/$patch"
+			echo "$patch" >> "$dir/src/debian/patches/series"
+		done < "$patch_dir/series"
+	fi
+)
+
+handle_leave_artifacts_exit()(
+  output_run_dir="$output/run_$(date +"%d-%m-%Y_%H:%M")"
+  cd / 
+  mv "$dir" $output_run_dir 
+  mv $output_run_dir/src $output_run_dir/a 
+  cp -r $output_run_dir/a $output_run_dir/b
+)
+
+
+email="contact@gardenlinux.io"
+maintainer="Garden Linux Builder"
+distribution=gardenlinux
+message="Rebuild for Garden Linux."
+version=
+version_suffix=gl~dev
+
+
+dir="$(mktemp -d)"
+output="$(pwd)/output"
+if [ "$leave_artifacts" = "true" ]; then
+  trap handle_leave_artifacts_exit EXIT
+else
+  trap 'cd / && rm -rf "$dir"' EXIT
+fi
+
+mkdir "$dir/src"
+
+. prepare_source
+
+[ -n "$version" ] || version="$(cd "$dir/src" && dpkg-parsechangelog --show-field Version)"
+
+if [ -e "$dir/src/debian/changelog" ]; then
+	(cd "$dir/src" && DEBEMAIL="$email" DEBFULLNAME="$maintainer" dch --newversion "$version$version_suffix" --distribution "$distribution" --force-distribution -- "$message";)
+else
+	(cd "$dir/src" && DEBEMAIL="$email" DEBFULLNAME="$maintainer" dch --create --package "$pkg" --newversion "$version$version_suffix" --distribution "$distribution" -- "$message";)
+fi
+
+pkg="$(cd "$dir/src" && dpkg-parsechangelog --show-field Source)"
+version="$(cd "$dir/src" && dpkg-parsechangelog --show-field Version)"
+version_orig="${version%-*}"
+
+if [ "$version" != "$version_orig" ]; then
+	xz < "$dir/orig.tar" > "$dir/${pkg}_${version_orig#*:}.orig.tar.xz"
+fi
+if [ -e "$dir/orig.tar" ]; then
+	rm "$dir/orig.tar"
+fi
+
+if [ -f finalize_source ]; then
+	. finalize_source
+fi
+
+chown -R user:users "$dir"
+(
+	cd "$dir/src"
+	su -s /bin/sh -c 'dpkg-source --build .' user
+)
+
+# all artifacts including src folder are in output/run_<data-time> folder in case of leave_artifacts (see EXIT trap)
+if [ "$leave_artifacts" != "true" ]; then
+  rm -rf "$dir/src"
+  mkdir -p .build
+  cp -r "$dir/." .build/.
+fi
+
+
+
+

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+
+set -exuo pipefail
+shopt -s nullglob
+
+DEB_BUILD_OPTIONS="terse nodoc noudeb"
+DEB_BUILD_PROFILES="nodoc noudeb"
+
+dir="$(mktemp -d)"
+trap 'cd / && rm -rf "$dir"' EXIT
+
+build="$1"
+dsc=(.build/*.dsc)
+
+if [ "$build" != binary ] && ! awk -F ': ' '$1 == "Architecture" { print $2 }' < "$dsc" | grep "$build"; then
+	echo "No packages for build=$build, nothing to do."
+	exit 0
+fi
+
+apt-get install --no-install-recommends -y --allow-downgrades ./build_dep/*_all.deb ./build_dep/*_"$(dpkg --print-architecture)".deb
+
+apt-get build-dep --no-install-recommends -y "$(realpath "$dsc")"
+dpkg-source --extract "$dsc" "$dir/src"
+
+if [ -f prepare_binary ]; then
+	. prepare_binary
+fi
+
+chown -R user:users "$dir"
+(
+	export DEB_BUILD_OPTIONS DEB_BUILD_PROFILES
+	cd "$dir/src"
+	su -s /bin/sh -c "dpkg-buildpackage --no-sign --build=$build" user
+)
+rm -rf "$dir/src"
+
+mkdir -p .build
+cp -r "$dir/." .build/.
