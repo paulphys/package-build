@@ -120,7 +120,7 @@ jobs:
           if [ "$arch" = arm64 ] && [ '${{ inputs.force-arm-build }}' != true ]; then
             build=any
           fi
-          "$dir/package-build/build" --binary-only --arch "$arch" --build "$build" .
+          PODMAN_OPTS="--privileged" "$dir/package-build/build" --binary-only --arch "$arch" --build "$build" .
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.arch }}
