@@ -30,7 +30,7 @@ chown -R user:users "$dir"
 (
 	export DEB_BUILD_OPTIONS DEB_BUILD_PROFILES
 	cd "$dir/src"
-	su -s /bin/sh -c "dpkg-buildpackage --no-sign --build=$build" user
+	dpkg-buildpackage --no-sign --build=$build
 )
 rm -rf "$dir/src"
 
