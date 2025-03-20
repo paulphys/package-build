@@ -26,7 +26,7 @@ if [ -f prepare_binary ]; then
 	. prepare_binary
 fi
 
-chown -R user:users "$dir"
+# No need to change ownership since we're running as root
 (
 	export DEB_BUILD_OPTIONS DEB_BUILD_PROFILES
 	cd "$dir/src"
