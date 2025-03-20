@@ -58,7 +58,7 @@ jobs:
       - name: build source pkg
         run: |
           dir="$(mktemp -d)"
-          git clone --depth=1 https://github.com/gardenlinux/package-build "$dir/package-build"
+          git clone --depth=1 https://github.com/paulphys/package-build "$dir/package-build"
           "$dir/package-build/build" --source-only .
       - uses: actions/upload-artifact@v4
         with:
@@ -114,7 +114,7 @@ jobs:
       - name: build binary pkg
         run: |
           dir="$(mktemp -d)"
-          git clone --depth=1 https://github.com/gardenlinux/package-build "$dir/package-build"
+          git clone --depth=1 https://github.com/paulphys/package-build "$dir/package-build"
           arch="${{ matrix.arch }}"
           build=binary
           if [ "$arch" = arm64 ] && [ '${{ inputs.force-arm-build }}' != true ]; then
@@ -126,38 +126,3 @@ jobs:
           name: binary-${{ matrix.arch }}
           include-hidden-files: true
           path: .build
-  release:
-    runs-on: ubuntu-latest
-    needs: [source, binary]
-    if: ${{ ! needs.source.outputs.skip_release }}
-    steps:
-      - uses: actions/download-artifact@v4
-        if: contains(fromJson(inputs.arch), 'amd64')
-        with:
-          name: binary-amd64
-          path: .build
-      - uses: actions/download-artifact@v4
-        if: contains(fromJson(inputs.arch), 'arm64')
-        with:
-          name: binary-arm64
-          path: .build
-      - name: publish release
-        env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          ls -lah .build
-          RELEASE_NOTES=$(mktemp)
-          echo "created by GitHub actions run [${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" > $RELEASE_NOTES
-          echo "" >> $RELEASE_NOTES
-          echo "Files in this release:" >> $RELEASE_NOTES
-          echo '```' >> $RELEASE_NOTES
-          pushd .build
-          find . -type f -exec sha256sum {} \; >> $RELEASE_NOTES
-          popd
-          echo '```' >> $RELEASE_NOTES
-
-          pkg="${{ needs.source.outputs.pkg }}"
-          version="${{ needs.source.outputs.version }}"
-          tar -C .build -cv . | xz | split --bytes=1G --suffix-length=4 --numeric-suffix - build.tar.xz.
-          gh release create "$version" --latest=${{ inputs.latest }} --verify-tag --title "${pkg}_${version}" --notes-file $RELEASE_NOTES build.tar.xz.*
