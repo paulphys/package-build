@@ -84,5 +84,5 @@ if [ -z "$skip_source" ]; then
     podman run --security-opt seccomp=unconfined --arch "$arch" --rm "${mount_opts[@]}" -w "/opt/package_build/workdir" -e leave_artifacts="$leave_artifacts" "$container" /opt/package_build/bin/source
 fi
 if [ -z "$skip_binary" ]; then
-	podman run --security-opt seccomp=unconfined --arch "$arch" --rm "${mount_opts[@]}" -w "/opt/package_build/workdir" "$container" /opt/package_build/bin/binary "$build"
+	podman run --security-opt seccomp=unconfined --privileged --arch "$arch" --rm "${mount_opts[@]}" -w "/opt/package_build/workdir" "$container" /opt/package_build/bin/binary "$build"
 fi
